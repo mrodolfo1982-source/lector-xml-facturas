@@ -1,125 +1,60 @@
 import streamlit as st
 import xml.etree.ElementTree as ET
 import pandas as pd
-from fpdf import FPDF
-import re
 
-st.set_page_config(page_title="Lector Universal DIAN", layout="wide")
+st.set_page_config(page_title="Lector de Datos XML", page_icon="🔍")
 
-class PDF(FPDF):
-    def header(self):
-        self.set_font('Helvetica', 'B', 15)
-        self.cell(0, 10, 'REPRESENTACIÓN GRÁFICA DE FACTURA ELECTRÓNICA', 0, 1, 'C')
-        self.ln(5)
+st.title("🔍 Extractor de Datos Reales XML")
+st.write("Sube tu archivo para ver la información que contiene sin generar documentos adicionales.")
 
-def generar_pdf(datos, items):
-    pdf = PDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", size=11)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(0, 10, f" DOCUMENTO NRO: {datos['folio']}", ln=True, fill=True)
-    pdf.ln(2)
-    pdf.cell(0, 8, f"Fecha de Emisión: {datos['fecha']}", ln=True)
-    pdf.cell(0, 8, f"Emisor: {datos['emisor']}", ln=True)
-    pdf.cell(0, 8, f"Receptor: {datos['receptor']}", ln=True)
-    pdf.ln(10)
-    
-    pdf.set_font("Helvetica", 'B', 11)
-    pdf.set_fill_color(200, 200, 200)
-    pdf.cell(110, 10, " Descripción del Servicio/Producto", 1, 0, 'L', True)
-    pdf.cell(25, 10, " Cant", 1, 0, 'C', True)
-    pdf.cell(50, 10, " Valor Total", 1, 1, 'C', True)
-    
-    pdf.set_font("Helvetica", size=10)
-    for item in items:
-        pdf.cell(110, 10, str(item['Producto'])[:55], 1)
-        pdf.cell(25, 10, str(item['Cant']), 1, 0, 'C')
-        pdf.cell(50, 10, f"{item['Precio']}", 1, 1, 'R')
-        
-    pdf.ln(5)
-    pdf.set_font("Helvetica", 'B', 12)
-    pdf.cell(0, 10, f"TOTAL: {datos['total']}  ", 0, 1, 'R')
-    return pdf.output()
-
-st.title("📄 Escáner Universal de XML (DIAN)")
-st.markdown("Sube cualquier archivo XML de facturación para extraer sus datos automáticamente.")
-
-archivo = st.file_uploader("Arrastra aquí tu archivo XML", type="xml")
+# El cargador de archivos
+archivo = st.file_uploader("Selecciona tu archivo XML", type="xml")
 
 if archivo:
     try:
-        xml_content = archivo.read().decode('utf-8')
-        xml_content = re.sub(r'<\?xml.*\?>', '', xml_content)
-        root = ET.fromstring(xml_content)
+        # Leer el contenido del archivo
+        xml_data = archivo.read()
+        root = ET.fromstring(xml_data)
 
-        # --- LÓGICA UNIVERSAL ---
+        # Función para buscar datos sin que importen los "namespaces" (las URL largas)
+        def buscar_dato(nombre_etiqueta):
+            for elemento in root.iter():
+                # Quitamos la parte técnica del nombre de la etiqueta
+                tag_limpio = elemento.tag.split('}')[-1]
+                if tag_limpio == nombre_etiqueta:
+                    return elemento.text
+            return "No encontrado"
 
-        # 1. Función para buscar cualquier etiqueta que contenga una palabra clave (ignorando namespaces)
-        def buscar_etiqueta(keywords):
-            for elem in root.iter():
-                tag_name = elem.tag.split('}')[-1]
-                if any(key.lower() == tag_name.lower() for key in keywords):
-                    return elem.text
-            return None
+        # Extraer los datos que realmente importan
+        datos = {
+            "Número de Factura (ID)": buscar_dato("ParentDocumentID") if buscar_dato("ParentDocumentID") != "No encontrado" else buscar_dato("ID"),
+            "Fecha de Emisión": buscar_dato("IssueDate"),
+            "Nombre Emisor": buscar_dato("RegistrationName"), # El primer RegistrationName suele ser el emisor
+            "Monto Total": buscar_dato("PayableAmount") or buscar_dato("TaxInclusiveAmount"),
+            "Moneda": buscar_dato("DocumentCurrencyCode")
+        }
 
-        # 2. Extracción de Folio (Busca ID corto que no sea URL)
-        ids_encontrados = []
-        for elem in root.iter():
-            if elem.tag.split('}')[-1] in ['ID', 'ParentDocumentID'] and elem.text:
-                if not elem.text.startswith('http') and len(elem.text) < 25:
-                    ids_encontrados.append(elem.text)
-        folio = ids_encontrados[0] if ids_encontrados else "S/N"
-
-        # 3. Extracción de Nombres (Emisor suele ser el primero, Receptor el segundo)
-        nombres = [e.text for e in root.iter() if 'RegistrationName' in e.tag and e.text]
-        emisor = nombres[0] if len(nombres) > 0 else "Emisor no identificado"
-        receptor = nombres[1] if len(nombres) > 1 else "Receptor no identificado"
-
-        # 4. Extracción de Fecha
-        fecha = buscar_etiqueta(['IssueDate', 'Date']) or "No hallada"
-
-        # 5. Escáner de Montos (Busca valores numéricos en etiquetas financieras)
-        montos = []
-        etiquetas_valor = ['PayableAmount', 'TaxInclusiveAmount', 'LineExtensionAmount', 'PriceAmount']
-        for elem in root.iter():
-            if elem.tag.split('}')[-1] in etiquetas_valor and elem.text:
-                try:
-                    val = float(elem.text)
-                    if val > 0: montos.append(val)
-                except: continue
+        # Mostrar resultados destacados
+        st.subheader("Datos Principales Encontrados")
         
-        monto_max = max(montos) if montos else 0
-        total_str = f"${monto_max:,.2f} COP" if monto_max > 0 else "Ver original"
-
-        # 6. Construcción de Items
-        items = []
-        # Intentamos buscar descripciones reales
-        descripciones = [e.text for e in root.iter() if 'Description' in e.tag and e.text]
-        if descripciones:
-            # Tomamos la primera descripción como producto principal
-            items.append({"Producto": descripciones[0], "Cant": "1", "Precio": total_str})
-        else:
-            items.append({"Producto": "Servicio/Producto General", "Cant": "1", "Precio": total_str})
-
-        # --- INTERFAZ ---
-        st.success(f"✅ Documento {folio} procesado")
+        # Crear columnas para que se vea ordenado
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Factura Nro", datos["Número de Factura (ID)"])
+            st.write(f"**Emisor:** {datos['Nombre Emisor']}")
         
-        pdf_bytes = generar_pdf({
-            "folio": folio, "fecha": fecha, "emisor": emisor, 
-            "receptor": receptor, "total": total_str
-        }, items)
-        
-        st.download_button(
-            label="📥 Descargar Representación PDF",
-            data=bytes(pdf_bytes),
-            file_name=f"Factura_{folio}.pdf",
-            mime="application/pdf"
-        )
+        with col2:
+            st.metric("Total", f"{datos['Monto Total']} {datos['Moneda']}")
+            st.write(f"**Fecha:** {datos['Fecha de Emisión']}")
 
-        st.write("### Datos Extraídos")
-        st.table(pd.DataFrame([{
-            "Folio": folio, "Emisor": emisor, "Receptor": receptor, "Total": total_str
-        }]))
+        # Mostrar todos los datos en una tabla para mayor claridad
+        st.subheader("Resumen de Información")
+        df = pd.DataFrame(list(datos.items()), columns=["Campo", "Valor Real"])
+        st.table(df)
+
+        # Sección para "Curiosos": Ver el XML tal cual
+        with st.expander("Ver estructura técnica completa (XML Crudo)"):
+            st.code(xml_data.decode("utf-8"), language="xml")
 
     except Exception as e:
-        st.error(f"Error al procesar este formato de XML: {e}")
+        st.error(f"Hubo un problema al leer el archivo: {e}")
