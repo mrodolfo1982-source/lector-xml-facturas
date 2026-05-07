@@ -1,119 +1,101 @@
 import streamlit as st
 import xml.etree.ElementTree as ET
 import pandas as pd
-from fpdf import FPDF
-import re
 
-st.set_page_config(page_title="Lector Universal XML", page_icon="🔍")
+st.set_page_config(page_title="Lector de Datos XML", page_icon="🔍")
 
-# --- CLASE PARA EL PDF ---
-class FacturaPDF(FPDF):
-    def header(self):
-        self.set_font('Helvetica', 'B', 15)
-        self.cell(0, 10, 'REPRESENTACIÓN DE DATOS EXTRAÍDOS', 0, 1, 'C')
-        self.ln(5)
+st.title("🔍 Extractor de Datos Reales XML")
+st.write("Sube tu archivo para ver la información que contiene sin generar documentos adicionales.")
 
-def crear_pdf(datos):
-    pdf = FacturaPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", size=12)
-    
-    # Encabezado gris
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(0, 10, f" Documento Nro: {datos['Folio']}", ln=True, fill=True)
-    pdf.ln(5)
-    
-    # Contenido detallado
-    for clave, valor in datos.items():
-        if clave != "Folio":
-            pdf.set_font("Helvetica", 'B', 11)
-            pdf.cell(50, 8, f"{clave}:", 0)
-            pdf.set_font("Helvetica", size=11)
-            pdf.cell(0, 8, f"{str(valor)}", 0, 1)
-    
-    pdf.ln(10)
-    # Retornamos el PDF como bytes puros para evitar errores de codificación
-    return pdf.output(dest='S')
-
-# --- INTERFAZ ---
-st.title("🔍 Extractor y Conversor XML (DIAN)")
-
-archivo = st.file_uploader("Sube tu archivo XML", type="xml")
+# El cargador de archivos
+archivo = st.file_uploader("Selecciona tu archivo XML", type="xml")
 
 if archivo:
     try:
-        # Leemos el archivo una sola vez
-        raw_data = archivo.read()
-        xml_text = raw_data.decode('utf-8', errors='ignore')
-        
-        # Limpieza para evitar errores de parseo
-        xml_text = re.sub(r'<\?xml.*\?>', '', xml_text)
-        root = ET.fromstring(xml_text)
+        # Leer el contenido del archivo
+        xml_data = archivo.read()
+        root = ET.fromstring(xml_data)
 
-        # 1. Función de búsqueda profunda mejorada
-        def buscar_profundo(palabras_clave):
-            for elem in root.iter():
-                tag_limpio = elem.tag.split('}')[-1]
-                if any(k.lower() == tag_limpio.lower() for k in palabras_clave) and elem.text:
-                    return elem.text
+        # Función para buscar datos sin que importen los "namespaces" (las URL largas)
+        def buscar_dato(nombre_etiqueta):
+            for elemento in root.iter():
+                # Quitamos la parte técnica del nombre de la etiqueta
+                tag_limpio = elemento.tag.split('}')[-1]
+                if tag_limpio == nombre_etiqueta:
+                    return elemento.text
             return "No encontrado"
 
-        # 2. Extracción de Folio (Número de factura real)
-        folios = []
-        for elem in root.iter():
-            tag = elem.tag.split('}')[-1]
-            if tag in ['ID', 'ParentDocumentID'] and elem.text:
-                if not elem.text.startswith('http') and len(elem.text) < 20:
-                    folios.append(elem.text)
-        folio_final = folios[0] if folios else "S/N"
-
-        # 3. Extracción de Montos (Escaneo total)
-        # Buscamos cualquier etiqueta que contenga 'Amount' y tenga un valor numérico
-        posibles_valores = []
-        for elem in root.iter():
-            tag = elem.tag.split('}')[-1]
-            if 'Amount' in tag and elem.text:
-                try:
-                    val = float(elem.text)
-                    if val > 0: posibles_valores.append(val)
-                except: continue
-        
-        total_num = max(posibles_valores) if posibles_valores else 0
-        total_final = f"${total_num:,.2f}" if total_num > 0 else "Consultar Original"
-
-        # 4. Consolidado de información
-        resumen = {
-            "Folio": folio_final,
-            "Fecha": buscar_profundo(['IssueDate', 'Date']),
-            "Emisor": buscar_profundo(['RegistrationName']),
-            "Monto Total": total_final,
-            "Moneda": buscar_profundo(['DocumentCurrencyCode', 'CurrencyCode'])
+        # Extraer los datos que realmente importan
+        datos = {
+            "Número de Factura (ID)": buscar_dato("ParentDocumentID") if buscar_dato("ParentDocumentID") != "No encontrado" else buscar_dato("ID"),
+            "Fecha de Emisión": buscar_dato("IssueDate"),
+            "Nombre Emisor": buscar_dato("RegistrationName"), # El primer RegistrationName suele ser el emisor
+            "Monto Total": buscar_dato("PayableAmount") or buscar_dato("TaxInclusiveAmount"),
+            "Moneda": buscar_dato("DocumentCurrencyCode")
         }
 
-        # --- MOSTRAR EN STREAMLIT ---
-        st.success(f"✅ Archivo {folio_final} procesado correctamente")
+        # Mostrar resultados destacados
+        st.subheader("Datos Principales Encontrados")
         
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric("Número de Factura", resumen["Folio"])
-            st.write(f"**Emisor:** {resumen['Emisor']}")
-        with c2:
-            st.metric("Total Detectado", resumen["Monto Total"])
-            st.write(f"**Fecha:** {resumen['Fecha']}")
-
-        st.write("### Tabla de Resumen")
-        st.table(pd.DataFrame([resumen]))
-
-        # --- BOTÓN DE DESCARGA (CORREGIDO) ---
-        pdf_output = crear_pdf(resumen)
+        # Crear columnas para que se vea ordenado
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Factura Nro", datos["Número de Factura (ID)"])
+            st.write(f"**Emisor:** {datos['Nombre Emisor']}")
         
-        # IMPORTANTE: Aquí pasamos los bytes directamente sin .encode()
-        st.download_button(
-            label="📥 Descargar PDF con estos datos",
-            data=bytes(pdf_output) if isinstance(pdf_output, (bytearray, bytes)) else pdf_output,
-            file_name=f"Reporte_{folio_final}.pdf",
-            mime="application/pdf"
-        )
+        with col2:
+            st.metric("Total", f"{datos['Monto Total']} {datos['Moneda']}")
+            st.write(f"**Fecha:** {datos['Fecha de Emisión']}")
+
+        # Mostrar todos los datos en una tabla para mayor claridad
+        st.subheader("Resumen de Información")
+        df = pd.DataFrame(list(datos.items()), columns=["Campo", "Valor Real"])
+        st.table(df)
+
+        # Sección para "Curiosos": Ver el XML tal cual
+        with st.expander("Ver estructura técnica completa (XML Crudo)"):
+            st.code(xml_data.decode("utf-8"), language="xml")
 
     except Exception as e:
-        st.error(f"Error al procesar: {e}")
+        st.error(f"Hubo un problema al leer el archivo: {e}") NS) is not None else "N/A"
+        emisor = root.find(".//cac:SenderParty//cbc:RegistrationName", NS).text if root.find(".//cac:SenderParty//cbc:RegistrationName", NS) is not None else "Desconocido"
+        receptor = root.find(".//cac:ReceiverParty//cbc:RegistrationName", NS).text if root.find(".//cac:ReceiverParty//cbc:RegistrationName", NS) is not None else "Desconocido"
+        
+        # Totales y productos
+        total_val = root.find(".//cac:LegalMonetaryTotal/cbc:PayableAmount", NS)
+        monto_total = f"${float(total_val.text):,.2f}" if total_val is not None else "$0.00"
+
+        datos_factura = {
+            "folio": folio,
+            "fecha": fecha,
+            "emisor": emisor,
+            "receptor": receptor,
+            "total": monto_total
+        }
+
+        # Detalle de items
+        items = []
+        for line in root.findall(".//cac:InvoiceLine", NS):
+            nombre = line.find(".//cbc:Description", NS).text
+            cant = line.find(".//cbc:InvoicedQuantity", NS).text
+            precio = line.find(".//cac:Price/cbc:PriceAmount", NS).text
+            items.append({"Producto": nombre, "Cant": cant, "Precio Unit": precio})
+
+        # Mostrar en pantalla
+        st.success(f"Factura {folio} procesada con éxito.")
+        
+        # Generar y ofrecer descarga
+        pdf_data = generar_pdf(datos_factura, items)
+        
+        st.download_button(
+            label="📥 Descargar Factura en PDF",
+            data=bytes(pdf_data),
+            file_name=f"Factura_{folio}.pdf",
+            mime="application/pdf"
+        )
+        
+        st.subheader("Vista Previa")
+        st.write(pd.DataFrame(items))
+
+    except Exception as e:
+        st.error(f"Error al procesar el XML: {e}")
