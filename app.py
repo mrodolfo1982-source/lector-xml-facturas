@@ -37,7 +37,8 @@ def generar_pdf(datos, items):
     pdf.ln(10)
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, f"TOTAL: {datos['total']}", 0, 1, 'R')
-    return pdf.output(dest='S').encode('latin-1')
+    # CORRECCIÓN AQUÍ: Retornamos el contenido directamente como bytes
+    return pdf.output()
 
 st.title("📄 Lector XML a PDF")
 
@@ -53,7 +54,6 @@ if archivo:
         tree = ET.parse(archivo)
         root = tree.getroot()
 
-        # Extracción segura con paréntesis corregidos
         folio_node = root.find(".//cbc:ParentDocumentID", NS)
         folio = folio_node.text if folio_node is not None else "S/N"
         
@@ -61,33 +61,37 @@ if archivo:
         fecha = fecha_node.text if fecha_node is not None else "N/A"
         
         emisor_node = root.find(".//cac:SenderParty//cbc:RegistrationName", NS)
-        emisor = emisor_node.text if emisor_node is not None else "Servientrega S.A."
+        emisor = emisor_node.text if emisor_node is not None else "Emisor Desconocido"
         
         receptor_node = root.find(".//cac:ReceiverParty//cbc:RegistrationName", NS)
-        receptor = receptor_node.text if receptor_node is not None else "RODOLFO MORENO"
+        receptor = receptor_node.text if receptor_node is not None else "Receptor Desconocido"
 
         total_node = root.find(".//cac:LegalMonetaryTotal/cbc:PayableAmount", NS)
         total = f"${float(total_node.text):,.2f}" if total_node is not None else "$0.00"
 
         items = []
         for line in root.findall(".//cac:InvoiceLine", NS):
-            desc = line.find(".//cbc:Description", NS).text
+            desc_node = line.find(".//cbc:Description", NS)
+            desc = desc_node.text if desc_node is not None else "Sin descripción"
             cant = line.find(".//cbc:InvoicedQuantity", NS).text
             precio = line.find(".//cac:Price/cbc:PriceAmount", NS).text
             items.append({"Producto": desc, "Cant": cant, "Precio": precio})
 
-        st.success(f"Factura {folio} cargada")
+        st.success(f"Factura {folio} cargada correctamente")
 
-        pdf_bytes = generar_pdf({"folio": folio, "fecha": fecha, "emisor": emisor, "receptor": receptor, "total": total}, items)
+        # Generamos los bytes del PDF
+        pdf_output = generar_pdf({"folio": folio, "fecha": fecha, "emisor": emisor, "receptor": receptor, "total": total}, items)
         
+        # BOTÓN DE DESCARGA CORREGIDO
         st.download_button(
             label="📥 Descargar Factura en PDF",
-            data=pdf_bytes,
+            data=pdf_output,
             file_name=f"Factura_{folio}.pdf",
             mime="application/pdf"
         )
         
-        st.write(pd.DataFrame(items))
+        st.subheader("Detalle de la Factura")
+        st.table(pd.DataFrame(items))
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error al procesar el archivo: {e}")
