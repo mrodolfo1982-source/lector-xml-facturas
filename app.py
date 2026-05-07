@@ -7,37 +7,42 @@ st.set_page_config(page_title="Visor Factura DIAN", layout="wide")
 
 class PDF(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 15)
+        # Usamos fuentes estándar para evitar problemas de compatibilidad
+        self.set_font('Helvetica', 'B', 15)
         self.cell(0, 10, 'REPRESENTACIÓN GRÁFICA DE FACTURA', 0, 1, 'C')
         self.ln(5)
 
 def generar_pdf(datos, items):
     pdf = PDF()
     pdf.add_page()
-    pdf.set_font("Arial", size=11)
+    pdf.set_font("Helvetica", size=11)
+    
+    # Información de cabecera
     pdf.cell(0, 10, f"Factura Nro: {datos['folio']}", ln=True)
     pdf.cell(0, 10, f"Fecha: {datos['fecha']}", ln=True)
     pdf.cell(0, 10, f"Emisor: {datos['emisor']}", ln=True)
     pdf.cell(0, 10, f"Receptor: {datos['receptor']}", ln=True)
     pdf.ln(10)
     
-    pdf.set_font("Arial", 'B', 11)
+    # Tabla de productos
+    pdf.set_font("Helvetica", 'B', 11)
     pdf.cell(100, 10, "Producto", 1)
     pdf.cell(30, 10, "Cant", 1)
     pdf.cell(50, 10, "Precio", 1)
     pdf.ln()
     
-    pdf.set_font("Arial", size=10)
+    pdf.set_font("Helvetica", size=10)
     for item in items:
-        pdf.cell(100, 10, str(item['Producto']), 1)
+        pdf.cell(100, 10, str(item['Producto'])[:50], 1) # Acortamos texto si es muy largo
         pdf.cell(30, 10, str(item['Cant']), 1)
         pdf.cell(50, 10, str(item['Precio']), 1)
         pdf.ln()
         
     pdf.ln(10)
-    pdf.set_font("Arial", 'B', 12)
+    pdf.set_font("Helvetica", 'B', 12)
     pdf.cell(0, 10, f"TOTAL: {datos['total']}", 0, 1, 'R')
-    # CORRECCIÓN AQUÍ: Retornamos el contenido directamente como bytes
+    
+    # IMPORTANTE: Retornamos los bytes directamente
     return pdf.output()
 
 st.title("📄 Lector XML a PDF")
@@ -54,6 +59,7 @@ if archivo:
         tree = ET.parse(archivo)
         root = tree.getroot()
 
+        # Extracción de datos
         folio_node = root.find(".//cbc:ParentDocumentID", NS)
         folio = folio_node.text if folio_node is not None else "S/N"
         
@@ -79,19 +85,19 @@ if archivo:
 
         st.success(f"Factura {folio} cargada correctamente")
 
-        # Generamos los bytes del PDF
-        pdf_output = generar_pdf({"folio": folio, "fecha": fecha, "emisor": emisor, "receptor": receptor, "total": total}, items)
+        # GENERACIÓN DEL PDF
+        pdf_content = generar_pdf({"folio": folio, "fecha": fecha, "emisor": emisor, "receptor": receptor, "total": total}, items)
         
-        # BOTÓN DE DESCARGA CORREGIDO
+        # EL CAMBIO CLAVE: Convertimos a bytes explícitamente para el botón
         st.download_button(
             label="📥 Descargar Factura en PDF",
-            data=pdf_output,
+            data=bytes(pdf_content),
             file_name=f"Factura_{folio}.pdf",
             mime="application/pdf"
         )
         
-        st.subheader("Detalle de la Factura")
-        st.table(pd.DataFrame(items))
+        st.subheader("Detalle visual")
+        st.dataframe(pd.DataFrame(items))
 
     except Exception as e:
-        st.error(f"Error al procesar el archivo: {e}")
+        st.error(f"Error crítico: {e}")
