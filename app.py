@@ -2,80 +2,92 @@ import streamlit as st
 import xml.etree.ElementTree as ET
 import pandas as pd
 from fpdf import FPDF
-from datetime import datetime
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Lector Factura XML", page_icon="📄")
+st.set_page_config(page_title="Visor Factura DIAN", layout="wide")
 
 class PDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 15)
-        self.cell(0, 10, 'REPRESENTACIÓN GRÁFICA DE FACTURA ELECTRÓNICA', 0, 1, 'C')
+        self.cell(0, 10, 'REPRESENTACIÓN GRÁFICA DE FACTURA', 0, 1, 'C')
         self.ln(5)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
 
 def generar_pdf(datos, items):
     pdf = PDF()
     pdf.add_page()
-    pdf.set_font("Arial", size=10)
-    
-    # Bloque de información
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(0, 10, f"Factura Nro: {datos['folio']}", ln=True, fill=True)
-    pdf.cell(0, 10, f"Fecha de Emisión: {datos['fecha']}", ln=True)
-    pdf.ln(5)
-    
-    # Emisor y Receptor
-    pdf.set_font("Arial", 'B', 10)
-    col_width = pdf.epw / 2
-    pdf.cell(col_width, 10, "EMISOR:", ln=0)
-    pdf.cell(col_width, 10, "RECEPTOR:", ln=1)
-    
-    pdf.set_font("Arial", size=10)
-    pdf.cell(col_width, 10, datos['emisor'], ln=0)
-    pdf.cell(col_width, 10, datos['receptor'], ln=1)
+    pdf.set_font("Arial", size=11)
+    pdf.cell(0, 10, f"Factura Nro: {datos['folio']}", ln=True)
+    pdf.cell(0, 10, f"Fecha: {datos['fecha']}", ln=True)
+    pdf.cell(0, 10, f"Emisor: {datos['emisor']}", ln=True)
+    pdf.cell(0, 10, f"Receptor: {datos['receptor']}", ln=True)
     pdf.ln(10)
     
-    # Tabla de productos
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(100, 10, "Descripción", 1)
-    pdf.cell(30, 10, "Cant.", 1)
-    pdf.cell(60, 10, "Precio Unit.", 1)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(100, 10, "Producto", 1)
+    pdf.cell(30, 10, "Cant", 1)
+    pdf.cell(50, 10, "Precio", 1)
     pdf.ln()
     
     pdf.set_font("Arial", size=10)
     for item in items:
         pdf.cell(100, 10, str(item['Producto']), 1)
         pdf.cell(30, 10, str(item['Cant']), 1)
-        pdf.cell(60, 10, f"${item['Precio Unit']}", 1)
+        pdf.cell(50, 10, str(item['Precio']), 1)
         pdf.ln()
-    
-    pdf.ln(5)
+        
+    pdf.ln(10)
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, f"TOTAL A PAGAR: {datos['total']}", 0, 1, 'R')
-    
-    return pdf.output()
+    pdf.cell(0, 10, f"TOTAL: {datos['total']}", 0, 1, 'R')
+    return pdf.output(dest='S').encode('latin-1')
 
-# --- INTERFAZ DE STREAMLIT ---
 st.title("📄 Lector XML a PDF")
-st.markdown("Extrae datos de tu factura y descarga el soporte legal.")
 
 NS = {
     'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
     'cbc': 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
 }
 
-archivo = st.file_uploader("Sube tu archivo AttachedDocument.xml", type="xml")
+archivo = st.file_uploader("Sube tu XML de Servientrega", type="xml")
 
 if archivo:
     try:
         tree = ET.parse(archivo)
         root = tree.getroot()
 
-        # Extracción de datos (Ajustado para Colombia)
-        folio = root.find(".//cbc:ParentDocumentID", NS).text if root.find(".//cbc:ParentDocumentID", NS) is not None else "S/N"
-        fecha = root.find(".//cbc:IssueDate", NS).text if root.find(".//cbc:IssueDate",
+        # Extracción segura con paréntesis corregidos
+        folio_node = root.find(".//cbc:ParentDocumentID", NS)
+        folio = folio_node.text if folio_node is not None else "S/N"
+        
+        fecha_node = root.find(".//cbc:IssueDate", NS)
+        fecha = fecha_node.text if fecha_node is not None else "N/A"
+        
+        emisor_node = root.find(".//cac:SenderParty//cbc:RegistrationName", NS)
+        emisor = emisor_node.text if emisor_node is not None else "Servientrega S.A."
+        
+        receptor_node = root.find(".//cac:ReceiverParty//cbc:RegistrationName", NS)
+        receptor = receptor_node.text if receptor_node is not None else "RODOLFO MORENO"
+
+        total_node = root.find(".//cac:LegalMonetaryTotal/cbc:PayableAmount", NS)
+        total = f"${float(total_node.text):,.2f}" if total_node is not None else "$0.00"
+
+        items = []
+        for line in root.findall(".//cac:InvoiceLine", NS):
+            desc = line.find(".//cbc:Description", NS).text
+            cant = line.find(".//cbc:InvoicedQuantity", NS).text
+            precio = line.find(".//cac:Price/cbc:PriceAmount", NS).text
+            items.append({"Producto": desc, "Cant": cant, "Precio": precio})
+
+        st.success(f"Factura {folio} cargada")
+
+        pdf_bytes = generar_pdf({"folio": folio, "fecha": fecha, "emisor": emisor, "receptor": receptor, "total": total}, items)
+        
+        st.download_button(
+            label="📥 Descargar Factura en PDF",
+            data=pdf_bytes,
+            file_name=f"Factura_{folio}.pdf",
+            mime="application/pdf"
+        )
+        
+        st.write(pd.DataFrame(items))
+
+    except Exception as e:
+        st.error(f"Error: {e}")
