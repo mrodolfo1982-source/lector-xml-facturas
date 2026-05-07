@@ -49,13 +49,24 @@ if archivo:
         xml_content = re.sub(r'<\?xml.*\?>', '', xml_content)
         root = ET.fromstring(xml_content)
 
-        # 1. BUSCADOR UNIVERSAL DE DATOS
-        def extraer(lista_nombres):
+       # 1. BUSCADOR UNIVERSAL DE DATOS MEJORADO
+        def extraer_folio():
+            posibles_folios = []
             for elem in root.iter():
-                tag_limpio = elem.tag.split('}')[-1] # Quita el namespace
-                if tag_limpio in lista_nombres:
-                    return elem.text
-            return None
+                tag_limpio = elem.tag.split('}')[-1]
+                # Guardamos todos los ID que encontremos
+                if tag_limpio in ['ID', 'ParentDocumentID'] and elem.text:
+                    posibles_folios.append(elem.text)
+            
+            # Prioridad: Buscar el que parezca un número de factura (corto y con letras/números)
+            for f in posibles_folios:
+                if len(f) < 20 and not f.startswith('http'):
+                    return f
+            return posibles_folios[0] if posibles_folios else "S/N"
+
+        # Aplicamos la nueva función
+        folio = extraer_folio()
+        fecha = extraer(['IssueDate']) or "2026-05-07"
 
         # 2. LÓGICA DE EXTRACCIÓN
         folio = extraer(['ID', 'ParentDocumentID']) or "S/N"
