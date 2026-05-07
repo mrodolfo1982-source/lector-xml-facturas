@@ -57,45 +57,4 @@ if archivo:
             st.code(xml_data.decode("utf-8"), language="xml")
 
     except Exception as e:
-        st.error(f"Hubo un problema al leer el archivo: {e}") NS) is not None else "N/A"
-        emisor = root.find(".//cac:SenderParty//cbc:RegistrationName", NS).text if root.find(".//cac:SenderParty//cbc:RegistrationName", NS) is not None else "Desconocido"
-        receptor = root.find(".//cac:ReceiverParty//cbc:RegistrationName", NS).text if root.find(".//cac:ReceiverParty//cbc:RegistrationName", NS) is not None else "Desconocido"
-        
-        # Totales y productos
-        total_val = root.find(".//cac:LegalMonetaryTotal/cbc:PayableAmount", NS)
-        monto_total = f"${float(total_val.text):,.2f}" if total_val is not None else "$0.00"
-
-        datos_factura = {
-            "folio": folio,
-            "fecha": fecha,
-            "emisor": emisor,
-            "receptor": receptor,
-            "total": monto_total
-        }
-
-        # Detalle de items
-        items = []
-        for line in root.findall(".//cac:InvoiceLine", NS):
-            nombre = line.find(".//cbc:Description", NS).text
-            cant = line.find(".//cbc:InvoicedQuantity", NS).text
-            precio = line.find(".//cac:Price/cbc:PriceAmount", NS).text
-            items.append({"Producto": nombre, "Cant": cant, "Precio Unit": precio})
-
-        # Mostrar en pantalla
-        st.success(f"Factura {folio} procesada con éxito.")
-        
-        # Generar y ofrecer descarga
-        pdf_data = generar_pdf(datos_factura, items)
-        
-        st.download_button(
-            label="📥 Descargar Factura en PDF",
-            data=bytes(pdf_data),
-            file_name=f"Factura_{folio}.pdf",
-            mime="application/pdf"
-        )
-        
-        st.subheader("Vista Previa")
-        st.write(pd.DataFrame(items))
-
-    except Exception as e:
-        st.error(f"Error al procesar el XML: {e}")
+        st.error(f"Hubo un problema al leer el archivo: {e}")
