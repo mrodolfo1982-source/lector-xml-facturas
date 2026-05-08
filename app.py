@@ -1,103 +1,152 @@
 import streamlit as st
 import xml.etree.ElementTree as ET
+import pandas as pd
 from fpdf import FPDF
 
-# Configuración de página con estilo CSS para evitar cortes de texto
-st.set_page_config(page_title="Lector DIAN Pro", page_icon="🦖")
+# Configuración de página
+st.set_page_config(page_title="Lector DIAN Pro", page_icon="🦖", layout="wide")
+
+# Estilo para que el nombre de la empresa resalte
 st.markdown("""
     <style>
-    .big-font { font-size:20px !important; font-weight: bold; }
-    .company-name { font-size: 28px; color: #1E88E5; line-height: 1.2; }
+    .company-header { font-size: 32px; color: #1E88E5; font-weight: bold; margin-bottom: 0px; }
+    .metric-card { background-color: #f0f2f6; padding: 15px; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-def generar_pdf(datos):
+def generar_pdf(datos_gral, productos):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
     pdf.cell(0, 10, "Soporte de Facturacion Digital", ln=True, align="C")
+    pdf.ln(5)
+    for k, v in datos_gral.items():
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(50, 7, f"{k}:", 0)
+        pdf.set_font("Arial", "", 11)
+        pdf.cell(0, 7, f"{v}", 0, ln=True)
     pdf.ln(10)
-    for campo, valor in datos.items():
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(50, 10, f"{campo}:", 0)
-        pdf.set_font("Arial", "", 12)
-        pdf.cell(0, 10, f"{valor}", 0, ln=True)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.set_font("Arial", "B", 10)
+    pdf.cell(90, 10, "Descripcion", 1, 0, 'C', True)
+    pdf.cell(50, 10, "Precio Unitario", 1, 0, 'C', True)
+    pdf.cell(50, 10, "IVA", 1, 1, 'C', True)
+    pdf.set_font("Arial", "", 9)
+    for p in productos:
+        pdf.cell(90, 8, str(p['Descripcion'])[:55], 1)
+        pdf.cell(50, 8, f"${p['Precio']:,.2f}", 1, 0, 'R')
+        pdf.cell(50, 8, f"${p['IVA']:,.2f}", 1, 1, 'R')
     return pdf.output(dest='S')
 
-st.title("🦖 Lector Universal (Modo Godzilla)")
-st.info("Sube cualquier XML de Colombia (Arturo Calle, Adidas, Éxito, etc.)")
+st.title("🦖 Godzilla XML: El Final Boss")
+st.info("Este código extrae Razón Social completa y Número de Factura exacto.")
 
-archivo = st.file_uploader("", type="xml")
+archivo = st.file_uploader("Sube tu factura XML", type="xml")
 
 if archivo:
     try:
         raw_content = archivo.read().decode("utf-8", errors="ignore")
         
-        def motor_godzilla(xml_text):
+        def motor_supremo(xml_text):
             xml_text = xml_text[xml_text.find('<'):] if '<' in xml_text else xml_text
             try:
                 root = ET.fromstring(xml_text)
-            except:
-                return None
+            except: return None, []
 
-            data = {"id": None, "comercio": None, "fecha": None, "total": 0.0}
-            nombres_prohibidos = ["DIAN", "DIRECCION DE IMPUESTOS", "UNIDAD ESPECIAL"]
+            info = {"id": "", "prefijo": "", "empresa": "No encontrada", "fecha": "N/A", "total": 0.0}
+            items = []
+            prohibidos = ["DIAN", "DIRECCION DE IMPUESTOS", "UNIDAD ESPECIAL", "N/A"]
 
+            # 1. Búsqueda exhaustiva de datos generales
             for nodo in root.iter():
-                tag_name = nodo.tag.split('}')[-1]
-                content = (nodo.text or "").strip()
-
-                if tag_name in ['PayableAmount', 'TaxInclusiveAmount'] and content:
-                    try:
-                        val = float(content)
-                        if val > data["total"]: data["total"] = val
+                tag = nodo.tag.split('}')[-1]
+                txt = (nodo.text or "").strip()
+                
+                # Captura de Monto
+                if tag in ['PayableAmount', 'TaxInclusiveAmount'] and txt:
+                    try: 
+                        v = float(txt)
+                        if v > info["total"]: info["total"] = v
                     except: pass
                 
-                if tag_name == 'ID' and content and len(content) < 40 and not content.startswith('http'):
-                    data["id"] = content
+                # Captura de Número de Factura e ID
+                if tag == 'ID' and txt and not txt.startswith('http'):
+                    if len(txt) < 40: info["id"] = txt
+                
+                # Captura de Prefijo (Muchas empresas lo traen aparte)
+                if tag == 'Prefix' and txt:
+                    info["prefijo"] = txt
 
-                if tag_name in ['RegistrationName', 'Name'] and len(content) > 3:
-                    if not any(p in content.upper() for p in nombres_prohibidos):
-                        if not data["comercio"] or len(content) > len(data["comercio"]):
-                            data["comercio"] = content
+                # Captura de Empresa (Razón Social Jurídica)
+                if tag in ['RegistrationName', 'Name'] and len(txt) > 3:
+                    if not any(p in txt.upper() for p in prohibidos):
+                        # Si encontramos algo con S.A.S, S.A. o LTDA, es prioridad
+                        if any(jur in txt.upper() for jur in ["S.A.S", "S.A.", "LTDA", "S.A"]):
+                            info["empresa"] = txt
+                        elif info["empresa"] == "No encontrada":
+                            info["empresa"] = txt
 
-                if tag_name == 'IssueDate' and content:
-                    data["fecha"] = content
+                if tag == 'IssueDate' and txt:
+                    info["fecha"] = txt
 
-                # Recursividad para AttachedDocuments
-                if any(x in content for x in ["<?xml", "<Invoice", "<AttachedDocument"]):
-                    interno = motor_godzilla(content)
-                    if interno:
-                        if interno["total"] > data["total"]: data["total"] = interno["total"]
-                        if interno["id"]: data["id"] = interno["id"]
-                        if interno["comercio"] and not any(p in interno["comercio"].upper() for p in nombres_prohibidos):
-                            data["comercio"] = interno["comercio"]
-                        if interno["fecha"]: data["fecha"] = interno["fecha"]
-            return data
+            # 2. Búsqueda de Productos
+            lineas = root.findall('.//{*}InvoiceLine')
+            for line in lineas:
+                d_node = line.find('.//{*}Item/{*}Description')
+                p_node = line.find('.//{*}Price/{*}PriceAmount')
+                i_node = line.find('.//{*}TaxTotal/{*}TaxAmount')
+                try:
+                    desc = d_node.text.strip() if d_node is not None else "Sin descripción"
+                    pre = float(p_node.text) if p_node is not None else 0.0
+                    iva = float(i_node.text) if i_node is not None else 0.0
+                    items.append({"Descripcion": desc, "Precio": pre, "IVA": iva})
+                except: continue
+
+            # 3. Recursividad para AttachedDocuments
+            if not items or info["total"] == 0:
+                for nodo in root.iter():
+                    contenido = (nodo.text or "").strip()
+                    if "<?xml" in contenido or "<Invoice" in contenido:
+                        i_f, i_i = motor_supremo(contenido)
+                        if i_f and i_f["total"] > 0: return i_f, i_i
+            
+            return info, items
+
+        res_gral, lista_prod = motor_supremo(raw_content)
+
+        if res_gral and res_gral["total"] > 0:
+            # Combinar Prefijo y Folio para el número real
+            num_factura = f"{res_gral['prefijo']} {res_gral['id']}".strip()
+            
+            st.markdown(f'<p class="company-header">{res_gral["empresa"]}</p>', unsafe_allow_html=True)
+            st.markdown("---")
+            
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric("Total Facturado", f"${res_gral['total']:,.2f}")
+            with col_b:
+                st.write("**Número de Factura:**")
+                st.subheader(num_factura)
+            with col_c:
+                st.write("**Fecha de Emisión:**")
+                st.subheader(res_gral['fecha'])
+            
+            st.subheader("📋 Detalle de Compra")
+            if lista_prod:
+                df = pd.DataFrame(lista_prod)
+                st.table(df.style.format({"Precio": "${:,.2f}", "IVA": "${:,.2f}"}))
+            
+            # Preparar PDF
+            pdf_data = {
+                "Empresa": res_gral["empresa"],
+                "Factura Nro": num_factura,
+                "Fecha": res_gral["fecha"],
+                "Total": f"${res_gral['total']:,.2f} COP"
+            }
+            pdf_out = generar_pdf(pdf_data, lista_prod)
+            st.download_button("📥 Descargar Soporte PDF", data=bytes(pdf_out), file_name=f"Factura_{num_factura}.pdf")
+        else:
+            st.error("No se detectó información válida en este XML.")
 
     except Exception as e:
-        st.error(f"Error: {e}")
-
-    res = motor_godzilla(raw_content)
-
-    if res and res["total"] > 0:
-        st.success("¡Factura devorada con éxito!")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Monto Total", f"${res['total']:,.2f}")
-            st.write(f"**Fecha:** {res['fecha']}")
-        with col2:
-            st.markdown(f"**Vendedor:**")
-            st.markdown(f'<p class="company-name">{res["comercio"]}</p>', unsafe_allow_html=True)
-            st.write(f"**Folio:** {res['id']}")
-
-        datos_pdf = {
-            "Comercio": res["comercio"],
-            "Factura Nro": res["id"],
-            "Fecha": res["fecha"],
-            "Monto Total": f"${res['total']:,.2f} COP"
-        }
-        
-        pdf_bytes = generar_pdf(datos_pdf)
-        st.download_button("📥 Descargar Soporte PDF", data=bytes(pdf_bytes), file_name=f"Factura_{res['id']}.pdf")
+        st.error(f"Error en el sistema: {e}")
