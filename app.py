@@ -2,16 +2,14 @@ import streamlit as st
 import xml.etree.ElementTree as ET
 import pandas as pd
 from fpdf import FPDF
-import base64
-import re
 
-st.set_page_config(page_title="Lector DIAN Pro", page_icon="🧾")
+st.set_page_config(page_title="Lector Universal de Facturas", page_icon="🧾")
 
 def generar_pdf(datos_dict):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Representacion Grafica de Factura", ln=True, align="C")
+    pdf.cell(0, 10, "Resumen de Facturacion", ln=True, align="C")
     pdf.ln(10)
     pdf.set_font("Arial", size=12)
     for campo, valor in datos_dict.items():
@@ -21,88 +19,99 @@ def generar_pdf(datos_dict):
         pdf.cell(0, 10, f"{str(valor)}", border=0, ln=True)
     return pdf.output(dest='S')
 
-st.title("🧾 Extractor Maestro de Facturas (ADIDAS/Servientrega)")
-st.info("Este motor ahora 'desencripta' el contenido interno para hallar el monto real.")
+st.title("🧾 Extractor Universal de XML (DIAN)")
+st.write("Sube cualquier factura electrónica en formato XML para extraer su información real.")
 
-archivo = st.file_uploader("Sube tu archivo XML", type="xml")
+archivo = st.file_uploader("Arrastra tu archivo XML aquí", type="xml")
 
 if archivo:
     try:
-        raw_content = archivo.read()
-        xml_text = raw_content.decode("utf-8", errors="ignore")
-        root = ET.fromstring(xml_text)
+        contenido_crudo = archivo.read().decode("utf-8", errors="ignore")
+        
+        # --- MOTOR DE BÚSQUEDA UNIVERSAL ---
+        def extraer_datos_recursivo(texto_xml):
+            try:
+                root = ET.fromstring(texto_xml)
+            except:
+                return None
 
-        # --- FUNCIÓN DE BÚSQUEDA PROFUNDA ---
-        def obtener_todos_los_montos(nodo):
-            encontrados = []
-            for e in nodo.iter():
+            res = {"id": None, "emisor": None, "fecha": None, "total": 0.0}
+            
+            # Etiquetas prioritarias según estándar UBL 2.1 (DIAN)
+            tags_total = ['PayableAmount', 'TaxInclusiveAmount', 'LegalMonetaryTotal']
+            tags_id = ['ID', 'ParentDocumentID']
+            tags_emisor = ['RegistrationName', 'Name']
+            
+            for e in root.iter():
                 tag = e.tag.split('}')[-1]
-                if any(k in tag for k in ['Amount', 'Total', 'Payable']) and e.text:
+                
+                # 1. Buscar Totales (el mayor valor suele ser el PayableAmount)
+                if any(t == tag for t in tags_total) and e.text:
                     try:
                         val = float(e.text)
-                        if val > 1000: encontrados.append(val)
-                    except: continue
-            return encontrados
+                        if val > res["total"]: res["total"] = val
+                    except: pass
+                
+                # 2. Buscar ID de Factura (evitando basura técnica)
+                if tag in tags_id and e.text:
+                    txt = e.text.strip()
+                    if not txt.startswith('http') and txt != "0" and len(txt) > 3:
+                        if not res["id"]: res["id"] = txt
 
-        # 1. Intentar leer la factura interna (Base64)
-        factura_interna_encontrada = False
-        montos_finales = []
-        
-        for e in root.iter():
-            tag = e.tag.split('}')[-1]
-            if tag == 'Description' and e.text and len(e.text) > 100:
-                try:
-                    # Intentamos decodificar el contenido oculto
-                    decoded_xml = base64.b64decode(e.text).decode('utf-8', errors='ignore')
-                    sub_root = ET.fromstring(decoded_xml)
-                    montos_finales = obtener_todos_los_montos(sub_root)
-                    factura_interna_encontrada = True
-                    break
-                except: continue
+                # 3. Buscar Emisor
+                if tag in tags_emisor and e.text and res["emisor"] is None:
+                    if len(e.text.strip()) > 3: res["emisor"] = e.text.strip()
 
-        # 2. Si no hay factura interna, buscar en la superficie
-        if not montos_finales:
-            montos_finales = obtener_todos_los_montos(root)
+                # 4. Buscar Fecha
+                if tag == 'IssueDate' and e.text:
+                    res["fecha"] = e.text
 
-        # 3. Consolidar Datos
-        def buscar_valor(tags):
-            for e in root.iter():
-                if e.tag.split('}')[-1] in tags and e.text:
-                    t = e.text.strip()
-                    if not t.startswith('http') and t != "0": return t
-            return "No encontrado"
+                # --- EL TRUCO PARA ADIDAS Y OTROS: XML ANIDADO ---
+                # Si encontramos un bloque que parece otro XML (CDATA), lo procesamos
+                if e.text and "<?xml" in e.text:
+                    datos_internos = extraer_datos_recursivo(e.text.strip())
+                    if datos_internos:
+                        if datos_internos["total"] > res["total"]: res["total"] = datos_internos["total"]
+                        if datos_internos["id"]: res["id"] = datos_internos["id"]
+                        if datos_internos["emisor"]: res["emisor"] = datos_internos["emisor"]
+            
+            return res
 
-        total_detectado = max(montos_finales) if montos_finales else 0
-        
-        resumen = {
-            "Factura Nro": buscar_valor(['ParentDocumentID', 'ID']),
-            "Emisor": buscar_valor(['RegistrationName', 'Name']),
-            "Fecha": buscar_valor(['IssueDate', 'Date']),
-            "Monto Total": f"${total_detectado:,.2f}" if total_detectado > 0 else "Consultar Soporte",
-            "Moneda": buscar_valor(['DocumentCurrencyCode', 'CurrencyCode']) or "COP"
-        }
+        # Ejecutar el extractor
+        resultado = extraer_datos_recursivo(contenido_crudo)
 
-        # --- MOSTRAR RESULTADOS ---
-        st.success("✅ Documento procesado con éxito")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric("Total Real", resumen["Monto Total"])
-            st.write(f"**Comercio:** {resumen['Emisor']}")
-        with c2:
-            st.metric("Factura", resumen["Factura Nro"])
-            st.write(f"**Fecha:** {resumen['Fecha']}")
+        if resultado:
+            # Diccionario limpio para mostrar y para el PDF
+            resumen = {
+                "Factura Nro": resultado["id"] if resultado["id"] else "No detectado",
+                "Comercio": resultado["emisor"] if resultado["emisor"] else "No detectado",
+                "Fecha": resultado["fecha"] if resultado["fecha"] else "No detectada",
+                "Monto Total": f"${resultado['total']:,.2f}",
+                "Moneda": "COP"
+            }
 
-        st.table(pd.DataFrame(list(resumen.items()), columns=["Campo", "Valor"]))
+            # --- INTERFAZ ---
+            st.success("✅ Información extraída con éxito")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total", resumen["Monto Total"])
+                st.write(f"**Emisor:** {resumen['Comercio']}")
+            with col2:
+                st.metric("Nro. Factura", resumen["Factura Nro"])
+                st.write(f"**Fecha:** {resumen['Fecha']}")
 
-        # --- DESCARGA ---
-        pdf_out = generar_pdf(resumen)
-        st.download_button(
-            label="📥 Descargar Soporte PDF",
-            data=bytes(pdf_out) if isinstance(pdf_out, (bytearray, bytes)) else pdf_out,
-            file_name=f"Factura_{resumen['Factura Nro']}.pdf",
-            mime="application/pdf"
-        )
+            st.table(pd.DataFrame(list(resumen.items()), columns=["Campo", "Valor Detectado"]))
+
+            # --- PDF ---
+            pdf_raw = generar_pdf(resumen)
+            st.download_button(
+                label="📥 Descargar Soporte PDF",
+                data=bytes(pdf_raw) if isinstance(pdf_raw, (bytearray, bytes)) else pdf_raw,
+                file_name=f"Factura_{resumen['Factura Nro']}.pdf",
+                mime="application/pdf"
+            )
+        else:
+            st.warning("No se pudo encontrar una estructura de factura válida en el archivo.")
 
     except Exception as e:
-        st.error(f"Error al procesar: {e}")
+        st.error(f"Error crítico de lectura: {e}")
