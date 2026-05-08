@@ -10,6 +10,7 @@ st.set_page_config(page_title="Lector DIAN Pro", page_icon="🦖", layout="wide"
 st.markdown("""
     <style>
     .company-header { font-size: 32px; color: #1E88E5; font-weight: bold; margin-bottom: 0px; }
+    .user-header { font-size: 20px; color: #424242; font-weight: bold; }
     .metric-card { background-color: #f0f2f6; padding: 15px; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
@@ -38,8 +39,8 @@ def generar_pdf(datos_gral, productos):
         pdf.cell(50, 8, f"${p['IVA']:,.2f}", 1, 1, 'R')
     return pdf.output(dest='S')
 
-st.title("🦖 Godzilla XML: El Final Boss")
-st.info("Este código extrae Razón Social completa y Número de Factura exacto.")
+st.title("🦖 Godzilla XML: El Final Boss + Comprador")
+st.info("Este código extrae Razón Social, NIT de empresa y datos completos del Comprador.")
 
 archivo = st.file_uploader("Sube tu factura XML", type="xml")
 
@@ -53,43 +54,47 @@ if archivo:
                 root = ET.fromstring(xml_text)
             except: return None, []
 
-            info = {"id": "", "prefijo": "", "empresa": "No encontrada", "fecha": "N/A", "total": 0.0}
+            info = {
+                "id": "", "prefijo": "", "empresa": "No encontrada", 
+                "nit_empresa": "No detectado", "fecha": "N/A", "total": 0.0,
+                "comprador_nombre": "No detectado", "comprador_id": "No detectado"
+            }
             items = []
             prohibidos = ["DIAN", "DIRECCION DE IMPUESTOS", "UNIDAD ESPECIAL", "N/A"]
 
-            # 1. Búsqueda exhaustiva de datos generales
+            # --- 1. Búsqueda de Vendedor (AccountingSupplierParty) ---
+            vendedor_node = root.find('.//{*}AccountingSupplierParty')
+            if vendedor_node is not None:
+                info["nit_empresa"] = vendedor_node.findtext('.//{*}CompanyID') or "N/A"
+                info["empresa"] = vendedor_node.findtext('.//{*}RegistrationName') or vendedor_node.findtext('.//{*}Name') or "No encontrada"
+
+            # --- 2. Búsqueda de Comprador (AccountingCustomerParty) ---
+            comprador_node = root.find('.//{*}AccountingCustomerParty')
+            if comprador_node is not None:
+                info["comprador_nombre"] = comprador_node.findtext('.//{*}RegistrationName') or comprador_node.findtext('.//{*}Name') or "Persona Natural"
+                info["comprador_id"] = comprador_node.findtext('.//{*}CompanyID') or "N/A"
+
+            # --- 3. Búsqueda exhaustiva de datos generales (Totales, Fechas, IDs) ---
             for nodo in root.iter():
                 tag = nodo.tag.split('}')[-1]
                 txt = (nodo.text or "").strip()
                 
-                # Captura de Monto
                 if tag in ['PayableAmount', 'TaxInclusiveAmount'] and txt:
                     try: 
                         v = float(txt)
                         if v > info["total"]: info["total"] = v
                     except: pass
                 
-                # Captura de Número de Factura e ID
                 if tag == 'ID' and txt and not txt.startswith('http'):
                     if len(txt) < 40: info["id"] = txt
                 
-                # Captura de Prefijo (Muchas empresas lo traen aparte)
                 if tag == 'Prefix' and txt:
                     info["prefijo"] = txt
-
-                # Captura de Empresa (Razón Social Jurídica)
-                if tag in ['RegistrationName', 'Name'] and len(txt) > 3:
-                    if not any(p in txt.upper() for p in prohibidos):
-                        # Si encontramos algo con S.A.S, S.A. o LTDA, es prioridad
-                        if any(jur in txt.upper() for jur in ["S.A.S", "S.A.", "LTDA", "S.A"]):
-                            info["empresa"] = txt
-                        elif info["empresa"] == "No encontrada":
-                            info["empresa"] = txt
 
                 if tag == 'IssueDate' and txt:
                     info["fecha"] = txt
 
-            # 2. Búsqueda de Productos
+            # --- 4. Búsqueda de Productos ---
             lineas = root.findall('.//{*}InvoiceLine')
             for line in lineas:
                 d_node = line.find('.//{*}Item/{*}Description')
@@ -102,7 +107,7 @@ if archivo:
                     items.append({"Descripcion": desc, "Precio": pre, "IVA": iva})
                 except: continue
 
-            # 3. Recursividad para AttachedDocuments
+            # --- 5. Recursividad para AttachedDocuments ---
             if not items or info["total"] == 0:
                 for nodo in root.iter():
                     contenido = (nodo.text or "").strip()
@@ -115,38 +120,4 @@ if archivo:
         res_gral, lista_prod = motor_supremo(raw_content)
 
         if res_gral and res_gral["total"] > 0:
-            # Combinar Prefijo y Folio para el número real
-            num_factura = f"{res_gral['prefijo']} {res_gral['id']}".strip()
-            
-            st.markdown(f'<p class="company-header">{res_gral["empresa"]}</p>', unsafe_allow_html=True)
-            st.markdown("---")
-            
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                st.metric("Total Facturado", f"${res_gral['total']:,.2f}")
-            with col_b:
-                st.write("**Número de Factura:**")
-                st.subheader(num_factura)
-            with col_c:
-                st.write("**Fecha de Emisión:**")
-                st.subheader(res_gral['fecha'])
-            
-            st.subheader("📋 Detalle de Compra")
-            if lista_prod:
-                df = pd.DataFrame(lista_prod)
-                st.table(df.style.format({"Precio": "${:,.2f}", "IVA": "${:,.2f}"}))
-            
-            # Preparar PDF
-            pdf_data = {
-                "Empresa": res_gral["empresa"],
-                "Factura Nro": num_factura,
-                "Fecha": res_gral["fecha"],
-                "Total": f"${res_gral['total']:,.2f} COP"
-            }
-            pdf_out = generar_pdf(pdf_data, lista_prod)
-            st.download_button("📥 Descargar Soporte PDF", data=bytes(pdf_out), file_name=f"Factura_{num_factura}.pdf")
-        else:
-            st.error("No se detectó información válida en este XML.")
-
-    except Exception as e:
-        st.error(f"Error en el sistema: {e}")
+            num_factura = f"{res_gral['prefijo']} {res_gral['id']
