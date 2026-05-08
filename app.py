@@ -3,7 +3,8 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from fpdf import FPDF
 
-st.set_page_config(page_title="Lector Universal DIAN", page_icon="🇨🇴")
+# Configuración de página
+st.set_page_config(page_title="Lector Universal DIAN", page_icon="🧾")
 
 def generar_pdf(datos):
     pdf = FPDF()
@@ -18,17 +19,17 @@ def generar_pdf(datos):
         pdf.cell(0, 10, f"{valor}", 0, ln=True)
     return pdf.output(dest='S')
 
-st.title("🧾 Lector de Facturas Integral")
-st.info("Compatible con Adidas (XML anidado) y Servientrega (AttachedDocument)")
+st.title("🧾 Lector de Facturas Universal")
+st.markdown("---")
 
-archivo = st.file_uploader("Sube tu archivo XML", type="xml")
+archivo = st.file_uploader("Sube cualquier factura XML de Colombia", type="xml")
 
 if archivo:
     try:
         raw_content = archivo.read().decode("utf-8", errors="ignore")
         
-        def minero_de_datos(xml_text):
-            # Limpiar posibles espacios antes del tag de apertura
+        def motor_universal(xml_text):
+            # Limpieza inicial para asegurar que empiece en un tag
             xml_text = xml_text[xml_text.find('<'):] if '<' in xml_text else xml_text
             try:
                 root = ET.fromstring(xml_text)
@@ -37,36 +38,42 @@ if archivo:
 
             data = {"id": None, "comercio": None, "fecha": None, "total": 0.0}
             
+            # Lista de etiquetas que la DIAN usa para el TOTAL
+            tags_dinero = ['PayableAmount', 'TaxInclusiveAmount', 'LegalMonetaryTotal']
+            
             for nodo in root.iter():
+                # Quitamos el Namespace (el texto entre llaves {})
                 tag_name = nodo.tag.split('}')[-1]
                 content = (nodo.text or "").strip()
 
-                # 1. Buscar el TOTAL (PayableAmount es el estándar de oro)
-                if tag_name == 'PayableAmount' and content:
+                # 1. Buscar el TOTAL (compara con varias opciones legales)
+                if any(t == tag_name for t in tags_dinero) and content:
                     try:
                         val = float(content)
+                        # Nos quedamos con el valor más alto encontrado (el total final)
                         if val > data["total"]: data["total"] = val
                     except: pass
                 
-                # 2. Buscar ID de factura (Priorizamos los que tienen letras como C546...)
+                # 2. Buscar ID (Folio de la factura)
                 if tag_name == 'ID' and content:
-                    if len(content) > 4 and not content.startswith('http'):
+                    if len(content) > 3 and not content.startswith('http'):
+                        # Preferimos IDs con letras (prefijos de factura)
                         if not data["id"] or any(c.isalpha() for c in content):
                             data["id"] = content
 
-                # 3. Buscar Nombre del Comercio
+                # 3. Buscar Nombre del Comercio (Emisor)
                 if tag_name in ['RegistrationName', 'Name'] and len(content) > 3:
-                    if not data["comercio"] or "S.A" in content.upper():
+                    # Filtramos nombres muy genéricos o vacíos
+                    if not data["comercio"] or (len(content) > len(data["comercio"])):
                         data["comercio"] = content
 
                 # 4. Buscar Fecha
-                if tag_name == 'IssueDate' and content and not data["fecha"]:
+                if tag_name in ['IssueDate', 'Date'] and content and not data["fecha"]:
                     data["fecha"] = content
 
-                # --- EL TRUCO RECURSIVO ---
-                # Si encontramos un bloque XML oculto (como en Adidas o Servientrega)
-                if "<?xml" in content or "<Invoice" in content or "<ApplicationResponse" in content:
-                    interno = minero_de_datos(content)
+                # 5. RECURSIVIDAD: Si hay contenido XML o Invoice dentro de un tag
+                if "<?xml" in content or "<Invoice" in content or "<AttachedDocument" in content:
+                    interno = motor_universal(content)
                     if interno:
                         if interno["total"] > data["total"]: data["total"] = interno["total"]
                         if interno["id"] and (not data["id"] or any(c.isalpha() for c in interno["id"])):
@@ -76,7 +83,7 @@ if archivo:
             
             return data
 
-        resultado = minero_de_datos(raw_content)
+        resultado = motor_universal(raw_content)
 
         if resultado and resultado["total"] > 0:
             resumen = {
@@ -87,19 +94,23 @@ if archivo:
                 "Moneda": "COP"
             }
 
-            # Mostrar resultados
-            st.success("¡Factura procesada!")
-            c1, c2 = st.columns(2)
-            c1.metric("Monto", resumen["Total a Pagar"])
-            c2.metric("Factura", resumen["Factura Nro"])
+            st.success("✅ Datos extraídos correctamente")
             
-            st.table(pd.DataFrame(list(resumen.items()), columns=["Concepto", "Dato"]))
+            # Formato scannable
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Monto Total", resumen["Total a Pagar"])
+            with col2:
+                st.metric("Número de Factura", resumen["Factura Nro"])
+            
+            st.write(f"**Vendedor:** {resumen['Empresa']}")
+            st.write(f"**Fecha:** {resumen['Fecha Emision']}")
 
-            # Descarga
-            pdf_out = generar_pdf(resumen)
-            st.download_button("📥 Descargar PDF", data=bytes(pdf_out), file_name=f"Factura_{resultado['id']}.pdf")
+            # Botón de PDF
+            pdf_bytes = generar_pdf(resumen)
+            st.download_button("📥 Generar Soporte PDF", data=bytes(pdf_bytes), file_name=f"Resumen_{resultado['id']}.pdf")
         else:
-            st.error("No se pudo extraer el monto. Verifica que el XML sea una factura válida.")
+            st.warning("⚠️ Se leyó el archivo pero no se encontró un monto superior a $0. ¿Es este un XML de factura?")
 
     except Exception as e:
-        st.error(f"Error técnico: {e}")
+        st.error(f"❌ Error al procesar el archivo: {e}")
