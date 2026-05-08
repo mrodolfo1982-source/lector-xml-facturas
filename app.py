@@ -4,13 +4,13 @@ import pandas as pd
 from fpdf import FPDF
 import re
 
-st.set_page_config(page_title="Lector de Facturas Pro", page_icon="🧾")
+st.set_page_config(page_title="Visor de Facturas Real", page_icon="🧾")
 
 def generar_pdf(datos_dict):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Resumen de Facturacion Extraido", ln=True, align="C")
+    pdf.cell(0, 10, "Resumen de Factura Extraido", ln=True, align="C")
     pdf.ln(10)
     pdf.set_font("Arial", size=12)
     for campo, valor in datos_dict.items():
@@ -20,79 +20,76 @@ def generar_pdf(datos_dict):
         pdf.cell(0, 10, f"{str(valor)}", border=0, ln=True)
     return pdf.output(dest='S')
 
-st.title("🧾 Lector de Facturas Reales (DIAN)")
-st.write("Este motor está diseñado para extraer el total real, incluso si está oculto.")
+st.title("🧾 Extractor Maestro de Facturas")
+st.info("Sube el XML de ADIDAS o cualquier comercio. Ahora leeremos el número real.")
 
-archivo = st.file_uploader("Sube el XML de ADIDAS, Servientrega o cualquier comercio", type="xml")
+archivo = st.file_uploader("Selecciona tu archivo XML", type="xml")
 
 if archivo:
     try:
-        xml_data = archivo.read()
-        xml_text = xml_data.decode("utf-8", errors="ignore")
+        xml_text = archivo.read().decode("utf-8", errors="ignore")
         root = ET.fromstring(xml_text)
 
-        # 1. BUSCADOR DE FOLIO (Evita URLs, busca el código real)
-        folios_reales = []
+        # --- LÓGICA DE EXTRACCIÓN MEJORADA ---
+        
+        # 1. Buscar el Número de Factura Real
+        numero_factura = "No encontrado"
         for e in root.iter():
             tag = e.tag.split('}')[-1]
-            if tag in ['ID', 'ParentDocumentID'] and e.text:
-                if not e.text.startswith('http') and len(e.text) < 25:
-                    folios_reales.append(e.text)
-        folio_final = folios_reales[0] if folios_reales else "0"
+            # Priorizamos ParentDocumentID que es donde ADIDAS guarda el número real
+            if tag in ['ParentDocumentID', 'ID'] and e.text:
+                texto = e.text.strip()
+                # Filtro: Que no sea un link, que no sea "0" y que tenga longitud razonable
+                if not texto.startswith('http') and texto != "0" and 4 < len(texto) < 30:
+                    numero_factura = texto
+                    break 
 
-        # 2. BUSCADOR DE TOTALES (Escaneo Agresivo)
-        # Buscamos etiquetas financieras estándar y no estándar
-        etiquetas_dinero = ['PayableAmount', 'TaxInclusiveAmount', 'LineExtensionAmount', 'LegalMonetaryTotal', 'PriceAmount']
-        valores_encontrados = []
-
+        # 2. Buscar el Total (Selecciona el valor más alto con sentido)
+        montos = []
         for e in root.iter():
-            tag = e.tag.split('}')[-1]
-            if any(k in tag for k in ['Amount', 'Total']) and e.text:
+            if any(k in e.tag for k in ['Amount', 'Total']) and e.text:
                 try:
                     val = float(e.text)
-                    if val > 100: # Filtramos valores pequeños para no confundir con IVA o centavos
-                        valores_encontrados.append(val)
+                    if val > 100: montos.append(val)
                 except: continue
-        
-        # El total suele ser el valor más alto encontrado en el documento
-        total_real = max(valores_encontrados) if valores_encontrados else 0
-        total_str = f"${total_real:,.2f}" if total_real > 0 else "No detectado automáticamente"
+        total_val = max(montos) if montos else 0
+        total_final = f"${total_val:,.2f}" if total_val > 0 else "Consultar Original"
 
-        # 3. DATOS DE EMISOR Y FECHA
-        def buscar_simple(claves):
+        # 3. Buscar Emisor y Fecha
+        def buscar_tag(lista_tags):
             for e in root.iter():
-                if e.tag.split('}')[-1] in claves: return e.text
+                if e.tag.split('}')[-1] in lista_tags and e.text: return e.text
             return "No encontrado"
 
         resumen = {
-            "Número de Factura (ID)": folio_final,
-            "Fecha de Emisión": buscar_simple(['IssueDate', 'Date']),
-            "Nombre Emisor": buscar_simple(['RegistrationName', 'Name']),
-            "Monto Total": total_str,
-            "Moneda": buscar_simple(['DocumentCurrencyCode', 'CurrencyCode']) or "COP"
+            "Factura Nro": numero_factura,
+            "Emisor": buscar_tag(['RegistrationName', 'Name']),
+            "Fecha": buscar_tag(['IssueDate', 'Date']),
+            "Monto Total": total_final,
+            "Moneda": buscar_tag(['DocumentCurrencyCode', 'CurrencyCode']) or "COP"
         }
 
-        # --- MOSTRAR RESULTADOS ---
-        st.success(f"✅ Procesado: Factura {folio_final}")
+        # --- INTERFAZ ---
+        st.success(f"✅ Documento Detectado")
         
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Total de Factura", total_str)
-            st.write(f"**Comercio:** {resumen['Nombre Emisor']}")
+            st.metric("Nro de Factura", resumen["Factura Nro"])
+            st.write(f"**Comercio:** {resumen['Emisor']}")
         with col2:
-            st.metric("Nro Documento", folio_final)
-            st.write(f"**Fecha:** {resumen['Fecha de Emisión']}")
+            st.metric("Total", resumen["Monto Total"])
+            st.write(f"**Fecha:** {resumen['Fecha']}")
 
-        st.table(pd.DataFrame(list(resumen.items()), columns=["Campo", "Valor en XML"]))
+        st.table(pd.DataFrame(list(resumen.items()), columns=["Campo", "Valor"]))
 
-        # --- BOTON DE DESCARGA ---
-        pdf_bytes = generar_pdf(resumen)
+        # --- BOTÓN DE DESCARGA ---
+        pdf_out = generar_pdf(resumen)
         st.download_button(
             label="📥 Descargar Soporte PDF",
-            data=bytes(pdf_bytes) if isinstance(pdf_bytes, (bytearray, bytes)) else pdf_bytes,
-            file_name=f"Factura_{folio_final}.pdf",
+            data=bytes(pdf_out) if isinstance(pdf_out, (bytearray, bytes)) else pdf_out,
+            file_name=f"Factura_{resumen['Factura Nro']}.pdf",
             mime="application/pdf"
         )
 
     except Exception as e:
-        st.error(f"Error técnico: {e}")
+        st.error(f"Error al leer: {e}")
